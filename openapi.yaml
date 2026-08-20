@@ -1,0 +1,653 @@
+openapi: 3.1.0
+info:
+  title: RecoverLoop API
+  version: 1.0.0
+  description: |
+    HTTP contract for the RecoverLoop submission prototype. The operator mutation
+    endpoint is a same-origin demo control, not production user authentication.
+    The webhook endpoint verifies an HMAC-SHA256 signature when a server-side
+    Razorpay webhook secret is configured.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+servers:
+  - url: /
+    description: Current RecoverLoop deployment
+tags:
+  - name: Dashboard
+  - name: Demo controls
+  - name: Provider ingestion
+paths:
+  /api/state:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboardState
+      summary: Read the current recovery dashboard state
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current state
+          headers:
+            X-Correlation-ID:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/actions:
+    post:
+      tags: [Demo controls]
+      operationId: applyDemoAction
+      summary: Apply an allow-listed operator or Reliability Lab action
+      description: |
+        This prototype control requires the literal `X-RecoverLoop-Action: demo`
+        intent header. Browser requests are also restricted to the deployment's
+        origin. These checks limit the demo surface; they are not a production
+        user-authentication or authorization scheme.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: X-RecoverLoop-Action
+          in: header
+          required: true
+          description: Explicit intent marker for the demo mutation surface.
+          schema:
+            type: string
+            const: demo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DemoActionRequest"
+      responses:
+        "200":
+          description: Resulting state and operator notice
+          headers:
+            X-Correlation-ID:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoActionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/plan:
+    post:
+      tags: [Demo controls]
+      operationId: planRecoveryCase
+      summary: Generate a policy-bounded recovery plan for one case
+      description: |
+        Uses the optional server-side OpenAI adapter when configured and safe for
+        the selected case. Missing keys, hard policy decisions, timeouts, and
+        invalid model output return the deterministic fallback plan.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: X-RecoverLoop-Action
+          in: header
+          required: true
+          description: Explicit intent marker for the demo planning surface.
+          schema:
+            type: string
+            const: demo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRecoveryRequest"
+      responses:
+        "200":
+          description: Policy-validated AI or deterministic recovery plan
+          headers:
+            X-Correlation-ID:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanRecoveryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/webhooks/razorpay:
+    post:
+      tags: [Provider ingestion]
+      operationId: ingestRazorpayWebhook
+      summary: Verify and record a Razorpay-shaped provider event
+      description: |
+        Verifies the lowercase or uppercase hexadecimal HMAC-SHA256 digest of the
+        raw request body, then records the provider event idempotently. The
+        endpoint returns 503 until `RAZORPAY_WEBHOOK_SECRET` is configured.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: X-Razorpay-Signature
+          in: header
+          required: true
+          description: HMAC-SHA256 digest of the exact raw request body.
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+        - name: X-Razorpay-Event-Id
+          in: header
+          required: true
+          description: Provider delivery id used for idempotency.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._:-]{1,128}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RazorpayEvent"
+      responses:
+        "200":
+          description: Event accepted, including whether it was already recorded
+          headers:
+            X-Correlation-ID:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/UnauthorizedWebhook"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnsupportedEvent"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: Optional caller correlation id; invalid values are replaced.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._:-]{8,64}$"
+
+  headers:
+    CorrelationId:
+      required: true
+      description: Correlation id accepted from the request or generated by the server.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Malformed headers, JSON, or request shape
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Demo intent or same-origin checks failed
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnauthorizedWebhook:
+      description: Webhook signature is absent or invalid
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Request conflicts with an existing event or current case version
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Recovery case was not found
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: Request exceeded its route-specific 8, 16, or 256 KiB limit
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnsupportedMediaType:
+      description: Content-Type is not application/json
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnsupportedEvent:
+      description: Webhook event is outside the allow-list
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Request could not be completed
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unavailable:
+      description: Webhook secret is not configured
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    DemoActionRequest:
+      oneOf:
+        - $ref: "#/components/schemas/ApprovalActionRequest"
+        - $ref: "#/components/schemas/RecoveryActionRequest"
+        - $ref: "#/components/schemas/ScenarioActionRequest"
+    ApprovalActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, caseId, decisionVersion]
+      properties:
+        action:
+          type: string
+          const: approve_case
+        caseId:
+          type: string
+          pattern: "^rcv_[A-Za-z0-9_-]{1,48}$"
+        decisionVersion:
+          type: string
+          pattern: "^dec_[A-Za-z0-9_-]{1,64}$"
+    RecoveryActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, caseId]
+      properties:
+        action:
+          type: string
+          const: recover_case
+        caseId:
+          type: string
+          pattern: "^rcv_[A-Za-z0-9_-]{1,48}$"
+    ScenarioActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum:
+            - duplicate_webhook
+            - out_of_order_success
+            - ai_outage
+            - provider_timeout
+            - incident_resolved
+            - reset
+    DemoActionResponse:
+      type: object
+      additionalProperties: false
+      required: [state, notice]
+      properties:
+        state:
+          $ref: "#/components/schemas/DashboardState"
+        notice:
+          type: string
+        idempotent:
+          type: boolean
+    PlanRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [caseId]
+      properties:
+        caseId:
+          type: string
+          pattern: "^rcv_[A-Za-z0-9_-]{1,48}$"
+    PlanRecoveryResponse:
+      type: object
+      additionalProperties: false
+      required: [caseId, plan, execution, generatedAt, state]
+      properties:
+        caseId:
+          type: string
+        plan:
+          $ref: "#/components/schemas/PlannerDecision"
+        execution:
+          type: string
+          enum: [live_ai, deterministic_fallback]
+        generatedAt:
+          type: string
+          format: date-time
+        state:
+          $ref: "#/components/schemas/DashboardState"
+    PlannerDecision:
+      type: object
+      additionalProperties: false
+      required:
+        - action
+        - actionLabel
+        - strategy
+        - confidence
+        - explanation
+        - messageDraft
+        - rejectedActions
+        - source
+      properties:
+        action:
+          $ref: "#/components/schemas/RecoveryAction"
+        actionLabel: { type: string }
+        strategy: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        explanation: { type: string }
+        messageDraft: { type: string }
+        rejectedActions:
+          type: array
+          items: { type: string }
+        source:
+          type: string
+          enum: [ai, fallback]
+    WebhookAccepted:
+      type: object
+      additionalProperties: false
+      required: [received, idempotent, correlationId]
+      properties:
+        received:
+          type: boolean
+          const: true
+        idempotent:
+          type: boolean
+        correlationId:
+          type: string
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error, correlationId]
+      properties:
+        error:
+          type: string
+        correlationId:
+          type: string
+    RazorpayEvent:
+      type: object
+      required: [event]
+      properties:
+        event:
+          type: string
+          enum:
+            - invoice.paid
+            - order.paid
+            - payment.authorized
+            - payment.captured
+            - payment.downtime.resolved
+            - payment.downtime.started
+            - payment.failed
+            - subscription.activated
+            - subscription.cancelled
+            - subscription.charged
+            - subscription.completed
+            - subscription.halted
+            - subscription.pending
+      additionalProperties: true
+    DashboardState:
+      type: object
+      additionalProperties: false
+      required: [metrics, health, cases, audit, comparison, lastScenario, updatedAt]
+      properties:
+        metrics:
+          $ref: "#/components/schemas/DashboardMetrics"
+        health:
+          $ref: "#/components/schemas/SystemHealth"
+        cases:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecoveryCase"
+        audit:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        comparison:
+          $ref: "#/components/schemas/PolicyComparison"
+        lastScenario:
+          type: [string, "null"]
+        updatedAt:
+          type: string
+          format: date-time
+    DashboardMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - atRiskMinor
+        - recoveredMinor
+        - incrementalMinor
+        - recoveryRate
+        - medianRecoveryMinutes
+        - contactsAvoided
+      properties:
+        atRiskMinor: { type: integer }
+        recoveredMinor: { type: integer }
+        incrementalMinor: { type: integer }
+        recoveryRate: { type: number }
+        medianRecoveryMinutes: { type: number }
+        contactsAvoided: { type: integer }
+    SystemHealth:
+      type: object
+      additionalProperties: false
+      required: [ingest, planner, messaging, circuitBreaker, plannerMode]
+      properties:
+        ingest:
+          $ref: "#/components/schemas/HealthState"
+        planner:
+          $ref: "#/components/schemas/HealthState"
+        messaging:
+          $ref: "#/components/schemas/HealthState"
+        circuitBreaker:
+          $ref: "#/components/schemas/HealthState"
+        plannerMode:
+          type: string
+          enum: [Constrained AI, Deterministic fallback]
+    HealthState:
+      type: string
+      enum: [healthy, degraded, open]
+    RecoveryCase:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - decisionVersion
+        - customer
+        - customerRef
+        - segment
+        - amountMinor
+        - currency
+        - rail
+        - failureCode
+        - failureLabel
+        - status
+        - confidence
+        - expectedValueMinor
+        - recommendedAction
+        - actionLabel
+        - strategy
+        - plannerSource
+        - consent
+        - contactCount
+        - accountAgeMonths
+        - locale
+        - owner
+        - relativeTime
+        - explanation
+        - messageDraft
+        - rejectedActions
+        - signals
+        - timeline
+      properties:
+        id: { type: string }
+        decisionVersion:
+          type: string
+          pattern: "^dec_[A-Za-z0-9_-]{1,64}$"
+        customer: { type: string }
+        customerRef: { type: string }
+        segment: { type: string }
+        amountMinor: { type: integer }
+        currency: { type: string, const: INR }
+        rail:
+          type: string
+          enum: [UPI, Card, Netbanking, Mandate]
+        failureCode: { type: string }
+        failureLabel: { type: string }
+        status:
+          type: string
+          enum: [observing, pending_approval, scheduled, recovered, suppressed, manual_review]
+        confidence: { type: number }
+        expectedValueMinor: { type: integer }
+        recommendedAction:
+          $ref: "#/components/schemas/RecoveryAction"
+        actionLabel: { type: string }
+        strategy: { type: string }
+        plannerSource:
+          type: string
+          enum: [policy, ai, fallback]
+        consent: { type: boolean }
+        contactCount: { type: integer }
+        accountAgeMonths: { type: integer }
+        locale:
+          type: string
+          enum: [en-IN, hi-IN]
+        owner: { type: string }
+        relativeTime: { type: string }
+        explanation: { type: string }
+        messageDraft: { type: string }
+        rejectedActions:
+          type: array
+          items: { type: string }
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionSignal"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaseTimelineEvent"
+    DecisionSignal:
+      type: object
+      additionalProperties: false
+      required: [label, impact, detail]
+      properties:
+        label: { type: string }
+        impact: { type: number }
+        detail: { type: string }
+    CaseTimelineEvent:
+      type: object
+      additionalProperties: false
+      required: [id, time, title, detail, tone]
+      properties:
+        id: { type: string }
+        time: { type: string }
+        title: { type: string }
+        detail: { type: string }
+        tone:
+          $ref: "#/components/schemas/Tone"
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, time, title, detail, category, tone]
+      properties:
+        id: { type: string }
+        time: { type: string }
+        title: { type: string }
+        detail: { type: string }
+        category:
+          type: string
+          enum: [event, policy, ai, action, reliability]
+        tone:
+          $ref: "#/components/schemas/Tone"
+    Tone:
+      type: string
+      enum: [neutral, positive, warning, critical]
+    RecoveryAction:
+      type: string
+      enum:
+        - wait_for_incident
+        - reconcile_payment
+        - request_method_update
+        - send_reminder
+        - offer_alternate_rail
+        - escalate_account
+        - manual_review
+    PolicyComparison:
+      type: object
+      additionalProperties: false
+      required:
+        - baselineRecoveryRate
+        - recoverLoopRecoveryRate
+        - baselineContacts
+        - recoverLoopContacts
+        - incidentSuppressions
+        - duplicateActionsPrevented
+      properties:
+        baselineRecoveryRate: { type: number }
+        recoverLoopRecoveryRate: { type: number }
+        baselineContacts: { type: integer }
+        recoverLoopContacts: { type: integer }
+        incidentSuppressions: { type: integer }
+        duplicateActionsPrevented: { type: integer }
